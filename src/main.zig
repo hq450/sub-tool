@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const app_version = "0.1.8";
+const app_version = "0.1.9";
 const max_input_size = 64 * 1024 * 1024;
 
 const Command = enum {
@@ -128,6 +128,36 @@ const NormalizedNode = struct {
     allow_insecure: ?bool = null,
     tfo: ?bool = null,
     raw_uri: ?[]const u8 = null,
+
+    fn deinit(self: *NormalizedNode, allocator: std.mem.Allocator) void {
+        allocator.free(self.scheme);
+        allocator.free(self.name);
+        allocator.free(self.server);
+        if (self.group) |v| allocator.free(v);
+        if (self.source_tag) |v| allocator.free(v);
+        if (self.protocol) |v| allocator.free(v);
+        if (self.method) |v| allocator.free(v);
+        if (self.username) |v| allocator.free(v);
+        if (self.password) |v| allocator.free(v);
+        if (self.uuid) |v| allocator.free(v);
+        if (self.network) |v| allocator.free(v);
+        if (self.security) |v| allocator.free(v);
+        if (self.host) |v| allocator.free(v);
+        if (self.path) |v| allocator.free(v);
+        if (self.sni) |v| allocator.free(v);
+        if (self.flow) |v| allocator.free(v);
+        if (self.obfs) |v| allocator.free(v);
+        if (self.obfs_host) |v| allocator.free(v);
+        if (self.obfs_password) |v| allocator.free(v);
+        if (self.protocol_param) |v| allocator.free(v);
+        if (self.alpn) |v| allocator.free(v);
+        if (self.congestion_control) |v| allocator.free(v);
+        if (self.fingerprint) |v| allocator.free(v);
+        if (self.public_key) |v| allocator.free(v);
+        if (self.short_id) |v| allocator.free(v);
+        if (self.spider_x) |v| allocator.free(v);
+        if (self.raw_uri) |v| allocator.free(v);
+    }
 };
 
 const ClashProxy = struct {
@@ -2867,6 +2897,8 @@ fn parseSs(allocator: std.mem.Allocator, line: []const u8, options: Options) !No
     var body = try requireBody(line, "ss");
     const remark = try fragmentOrDefault(allocator, line, "");
     defer allocator.free(remark);
+    var inner_remark: ?[]u8 = null;
+    defer if (inner_remark) |value| allocator.free(value);
 
     var plugin_value: ?[]u8 = null;
     defer if (plugin_value) |v| allocator.free(v);
@@ -2887,16 +2919,23 @@ fn parseSs(allocator: std.mem.Allocator, line: []const u8, options: Options) !No
     var hostport: []const u8 = "";
 
     if (main_decoded) |decoded| {
-        if (std.mem.indexOfScalar(u8, decoded, '@')) |_| {
-            const at = std.mem.lastIndexOfScalar(u8, decoded, '@').?;
-            const userinfo = decoded[0..at];
-            hostport = decoded[at + 1 ..];
+        const decoded_parts = if (remark.len == 0)
+            splitFragment(decoded)
+        else
+            splitFragment(decoded[0..decoded.len]);
+        if (remark.len == 0 and decoded_parts.fragment.len > 0) {
+            inner_remark = try sanitizeSsRemarkAlloc(allocator, decoded_parts.fragment);
+        }
+        if (std.mem.indexOfScalar(u8, decoded_parts.before, '@')) |_| {
+            const at = std.mem.lastIndexOfScalar(u8, decoded_parts.before, '@').?;
+            const userinfo = decoded_parts.before[0..at];
+            hostport = decoded_parts.before[at + 1 ..];
             const mp = std.mem.indexOfScalar(u8, userinfo, ':') orelse return error.InvalidUri;
             method = userinfo[0..mp];
             password = userinfo[mp + 1 ..];
         } else {
             const at = std.mem.lastIndexOfScalar(u8, body, '@') orelse return error.InvalidUri;
-            const userinfo_decoded = decoded;
+            const userinfo_decoded = decoded_parts.before;
             const mp = std.mem.indexOfScalar(u8, userinfo_decoded, ':') orelse return error.InvalidUri;
             method = userinfo_decoded[0..mp];
             password = userinfo_decoded[mp + 1 ..];
@@ -2915,7 +2954,12 @@ fn parseSs(allocator: std.mem.Allocator, line: []const u8, options: Options) !No
     const hp = try splitHostPortAlloc(allocator, hostport);
     defer hp.deinit(allocator);
 
-    const final_name = if (remark.len > 0) remark else hp.host;
+    const final_name = if (remark.len > 0)
+        remark
+    else if (inner_remark) |value|
+        if (value.len > 0) value else hp.host
+    else
+        hp.host;
     const raw_group = try queryValueAlloc(allocator, query_split.query, "group");
     const group = if (raw_group) |v| try normalizeOptionalGroupAlloc(allocator, v, true) else null;
     defer if (raw_group) |v| allocator.free(v);
@@ -2927,10 +2971,11 @@ fn parseSs(allocator: std.mem.Allocator, line: []const u8, options: Options) !No
     if (group) |g| node.group = try allocator.dupe(u8, g);
     if (plugin_value) |plugin_raw| {
         node.protocol = try allocator.dupe(u8, "plugin");
-        node.obfs = try allocator.dupe(u8, plugin_raw);
         if (std.mem.indexOf(u8, plugin_raw, "obfs=")) |_| {
             if (extractPluginField(allocator, plugin_raw, "obfs")) |v| node.obfs = v;
             if (extractPluginField(allocator, plugin_raw, "obfs-host")) |v| node.obfs_host = v;
+        } else {
+            node.obfs = try allocator.dupe(u8, plugin_raw);
         }
     }
     if (options.include_raw) node.raw_uri = try allocator.dupe(u8, line);
@@ -3778,6 +3823,68 @@ fn urlDecodeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     return try out.toOwnedSlice(allocator);
 }
 
+fn sanitizeSsRemarkAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    if (input.len == 0) return try allocator.dupe(u8, "");
+    if (std.unicode.utf8ValidateSlice(input)) {
+        return try allocator.dupe(u8, std.mem.trim(u8, input, " \t\r\n"));
+    }
+
+    var out = std.ArrayList(u8){};
+    defer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < input.len) {
+        if (i + 5 < input.len) {
+            if (decodeCesu8SurrogatePair(input[i .. i + 6])) |codepoint| {
+                var buf: [4]u8 = undefined;
+                const len = std.unicode.utf8Encode(codepoint, &buf) catch 0;
+                if (len > 0) try out.appendSlice(allocator, buf[0..len]);
+                i += 6;
+                continue;
+            }
+        }
+
+        const width = std.unicode.utf8ByteSequenceLength(input[i]) catch {
+            i += 1;
+            continue;
+        };
+        if (i + width <= input.len) {
+            const slice = input[i .. i + width];
+            if (std.unicode.utf8ValidateSlice(slice)) {
+                try out.appendSlice(allocator, slice);
+                i += width;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    const trimmed = std.mem.trim(u8, out.items, " \t\r\n");
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn decodeCesu8SurrogatePair(input: []const u8) ?u21 {
+    if (input.len < 6) return null;
+    const hi = decodeCesu8Surrogate(input[0..3]) orelse return null;
+    const lo = decodeCesu8Surrogate(input[3..6]) orelse return null;
+    if (hi < 0xD800 or hi > 0xDBFF) return null;
+    if (lo < 0xDC00 or lo > 0xDFFF) return null;
+    return @as(u21, 0x10000) +
+        (@as(u21, hi - 0xD800) << 10) +
+        @as(u21, lo - 0xDC00);
+}
+
+fn decodeCesu8Surrogate(input: []const u8) ?u16 {
+    if (input.len != 3) return null;
+    if ((input[0] & 0xF0) != 0xE0) return null;
+    if ((input[1] & 0xC0) != 0x80 or (input[2] & 0xC0) != 0x80) return null;
+    const codepoint: u16 = (@as(u16, input[0] & 0x0F) << 12) |
+        (@as(u16, input[1] & 0x3F) << 6) |
+        @as(u16, input[2] & 0x3F);
+    if (codepoint < 0xD800 or codepoint > 0xDFFF) return null;
+    return codepoint;
+}
+
 fn hexNibble(ch: u8) !u8 {
     return switch (ch) {
         '0'...'9' => ch - '0',
@@ -3889,7 +3996,8 @@ test "inspect malformed base64 uri lines with trailing char" {
 test "parse ss link" {
     const allocator = std.testing.allocator;
     const line = "ss://YWVzLTI1Ni1nY206cGFzczBAZXhhbXBsZS5jb206NDQz#Node";
-    const node = try parseSs(allocator, line, .{ .command = .parse_uri_lines });
+    var node = try parseSs(allocator, line, .{ .command = .parse_uri_lines });
+    defer node.deinit(allocator);
     try std.testing.expectEqualStrings("ss", node.scheme);
     try std.testing.expectEqualStrings("Node", node.name);
     try std.testing.expectEqualStrings("example.com", node.server);
@@ -3899,10 +4007,11 @@ test "parse ss link" {
 test "parse ss link with amp group" {
     const allocator = std.testing.allocator;
     const line = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTo3YTNhOGI5Mi1kNjY1LTQ3MmQtYWZjNy00Y2IyNzZhZTYxMjA@abb9f910fc9f4ababffb16db3cfd972e.ss03.net:22350&group=c3NMaW5rcw==#Expire%3A%202026-08-30";
-    const node = parseSs(allocator, line, .{ .command = .parse_uri_lines }) catch |err| {
+    var node = parseSs(allocator, line, .{ .command = .parse_uri_lines }) catch |err| {
         std.debug.print("parse ss amp group err={s}\n", .{@errorName(err)});
         return err;
     };
+    defer node.deinit(allocator);
     try std.testing.expectEqualStrings("ss", node.scheme);
     try std.testing.expectEqualStrings("Expire: 2026-08-30", node.name);
     try std.testing.expectEqualStrings("abb9f910fc9f4ababffb16db3cfd972e.ss03.net", node.server);
@@ -3912,20 +4021,36 @@ test "parse ss link with amp group" {
 test "parse ss link with plugin query" {
     const allocator = std.testing.allocator;
     const line = "ss://YWVzLTEyOC1nY206N2EzYThiOTItZDY2NS00NzJkLWFmYzctNGNiMjc2YWU2MTIw@abb9f910fc9f4ababffb16db3cfd972e.ss03.net:22401/?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dltsbdy.gtimg.com&group=c3NMaW5rcw==#%F0%9F%87%AD%F0%9F%87%B0%20%E9%A6%99%E6%B8%AF%2001%20%5Bobfs%5D";
-    const node = parseSs(allocator, line, .{ .command = .parse_uri_lines }) catch |err| {
+    var node = parseSs(allocator, line, .{ .command = .parse_uri_lines }) catch |err| {
         std.debug.print("parse ss plugin err={s}\n", .{@errorName(err)});
         return err;
     };
+    defer node.deinit(allocator);
     try std.testing.expectEqualStrings("ss", node.scheme);
     try std.testing.expectEqualStrings("🇭🇰 香港 01 [obfs]", node.name);
     try std.testing.expectEqualStrings("abb9f910fc9f4ababffb16db3cfd972e.ss03.net", node.server);
     try std.testing.expectEqual(@as(u16, 22401), node.port);
 }
 
+test "parse ss link with inline base64 remark cesu8" {
+    const allocator = std.testing.allocator;
+    const line = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTo3YTNhOGI5Mi1kNjY1LTQ3MmQtYWZjNy00Y2IyNzZhZTYxMjBAYWJiOWY5MTBmYzlmNGFiYWJmZmIxNmRiM2NmZDk3MmUuc3MwMy5uZXQ6MjIzOTIj7aC87bet7aC87bewIOmmmea4ryAxMQ==";
+    var node = parseSs(allocator, line, .{ .command = .parse_uri_lines }) catch |err| {
+        std.debug.print("parse ss inline remark err={s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer node.deinit(allocator);
+    try std.testing.expectEqualStrings("ss", node.scheme);
+    try std.testing.expectEqualStrings("🇭🇰 香港 11", node.name);
+    try std.testing.expectEqualStrings("abb9f910fc9f4ababffb16db3cfd972e.ss03.net", node.server);
+    try std.testing.expectEqual(@as(u16, 22392), node.port);
+}
+
 test "parse vless link" {
     const allocator = std.testing.allocator;
     const line = "vless://11111111-1111-1111-1111-111111111111@example.com:443?type=ws&security=tls&host=cdn.example.com&path=%2Fws&sni=tls.example.com&encryption=mlkem768x25519plus.native.0rtt.test#VLESS";
-    const node = try parseVlessLike(allocator, "vless", line, .{ .command = .parse_uri_lines });
+    var node = try parseVlessLike(allocator, "vless", line, .{ .command = .parse_uri_lines });
+    defer node.deinit(allocator);
     try std.testing.expectEqualStrings("vless", node.scheme);
     try std.testing.expectEqualStrings("VLESS", node.name);
     try std.testing.expectEqualStrings("example.com", node.server);
@@ -3939,7 +4064,8 @@ test "parse vmess link" {
         "eyJ2IjoiMiIsInBzIjoiVk1FU1MiLCJhZGQiOiJleGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6IjExMTExMTExLTExMTEtMTExMS0xMTExLTExMTExMTExMTExMSIsImFpZCI6IjAiLCJuZXQiOiJ3cyIsImhvc3QiOiJjZG4uZXhhbXBsZS5jb20iLCJwYXRoIjoiL3dzIiwidGxzIjoidGxzIn0=";
     const line = try std.fmt.allocPrint(allocator, "vmess://{s}", .{payload});
     defer allocator.free(line);
-    const node = try parseVmess(allocator, line, .{ .command = .parse_uri_lines });
+    var node = try parseVmess(allocator, line, .{ .command = .parse_uri_lines });
+    defer node.deinit(allocator);
     try std.testing.expectEqualStrings("vmess", node.scheme);
     try std.testing.expectEqualStrings("VMESS", node.name);
     try std.testing.expectEqualStrings("example.com", node.server);

@@ -78,6 +78,7 @@ const Options = struct {
     include_pattern: ?[]const u8 = null,
     group: ?[]const u8 = null,
     source_tag: ?[]const u8 = null,
+    profile_id: ?[]const u8 = null,
     source_url_hash: ?[]const u8 = null,
     airport_identity: ?[]const u8 = null,
     source_scope: ?[]const u8 = null,
@@ -274,7 +275,7 @@ fn printUsage(writer: anytype) !void {
     try writer.writeAll(
         "Usage:\n" ++
         "  sub-tool inspect [--input path]\n" ++
-        "  sub-tool parse-uri-lines [--input path] [--output path] [--format normalized|fancyss] [--group name] [--source-tag tag] [--source-url-hash hash] [--airport-identity value] [--source-scope value] [--reuse-ids-from path] [--compare-with path] [--diff-output path] [--diff-summary-output path] [--summary-output path] [--exclude-pattern pattern] [--include-pattern pattern] [--keep-info-node 0|1] [--mode value] [--pkg-type full|lite] [--sub-ai 0|1] [--hy2-up value] [--hy2-dl value] [--hy2-tfo-switch value] [--hy2-cg-opt value] [--log-level none|summary|verbose] [--log-output path] [--include-raw]\n" ++
+        "  sub-tool parse-uri-lines [--input path] [--output path] [--format normalized|fancyss] [--group name] [--source-tag tag] [--profile-id value] [--source-url-hash hash] [--airport-identity value] [--source-scope value] [--reuse-ids-from path] [--compare-with path] [--diff-output path] [--diff-summary-output path] [--summary-output path] [--exclude-pattern pattern] [--include-pattern pattern] [--keep-info-node 0|1] [--mode value] [--pkg-type full|lite] [--sub-ai 0|1] [--hy2-up value] [--hy2-dl value] [--hy2-tfo-switch value] [--hy2-cg-opt value] [--log-level none|summary|verbose] [--log-output path] [--include-raw]\n" ++
         "  sub-tool compare-fancyss --old path --new path [--output path]\n" ++
         "  sub-tool summary [--input path]\n" ++
         "  sub-tool version\n",
@@ -346,6 +347,10 @@ fn parseArgs(args: []const []const u8) !Options {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             options.source_tag = args[i];
+        } else if (std.mem.eql(u8, arg, "--profile-id")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            options.profile_id = args[i];
         } else if (std.mem.eql(u8, arg, "--source-url-hash")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -1463,6 +1468,12 @@ fn appendIdentityFieldsAlloc(allocator: std.mem.Allocator, base_json: []const u8
     try writeJsonString(writer, "_source");
     try writer.writeAll(":");
     try writeJsonString(writer, "subscribe");
+    if (options.profile_id) |profile_id| {
+        try writer.writeAll(",");
+        try writeJsonString(writer, "_profile_id");
+        try writer.writeAll(":");
+        try writeJsonString(writer, profile_id);
+    }
     try writer.writeAll(",");
     try writeJsonString(writer, "_airport_identity");
     try writer.writeAll(":");

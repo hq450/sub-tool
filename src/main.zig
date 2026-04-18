@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const app_version = "0.1.9";
+const app_version = "0.1.10";
 const max_input_size = 64 * 1024 * 1024;
 
 const Command = enum {

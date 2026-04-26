@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const app_version = "0.1.10";
+const app_version = "0.1.11";
 const max_input_size = 64 * 1024 * 1024;
 
 const Command = enum {
@@ -999,11 +999,109 @@ const KeywordFilter = struct {
     fn matches(self: *const KeywordFilter, text: []const u8) bool {
         if (self.tokens.items.len == 0) return false;
         for (self.tokens.items) |token| {
-            if (std.mem.indexOf(u8, text, token) != null) return true;
+            if (keywordTokenMatches(text, token)) return true;
         }
         return false;
     }
 };
+
+fn keywordTokenMatches(text: []const u8, token: []const u8) bool {
+    if (token.len == 0) return false;
+    if (isShortAsciiCode(token)) {
+        if (containsShortAsciiCode(text, token)) return true;
+        return keywordAliasMatches(text, token);
+    }
+    if (std.mem.indexOf(u8, text, token) != null) return true;
+    if (token.len >= 3 and containsAsciiCaseFold(text, token)) return true;
+    return keywordAliasMatches(text, token);
+}
+
+fn containsAsciiCaseFold(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var idx: usize = 0;
+    while (idx + needle.len <= haystack.len) : (idx += 1) {
+        var matched = true;
+        var offset: usize = 0;
+        while (offset < needle.len) : (offset += 1) {
+            if (std.ascii.toLower(haystack[idx + offset]) != std.ascii.toLower(needle[offset])) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return true;
+    }
+    return false;
+}
+
+fn isShortAsciiCode(value: []const u8) bool {
+    if (value.len != 2) return false;
+    return std.ascii.isAlphabetic(value[0]) and std.ascii.isAlphabetic(value[1]);
+}
+
+fn containsShortAsciiCode(haystack: []const u8, code: []const u8) bool {
+    if (!isShortAsciiCode(code) or code.len > haystack.len) return false;
+    var idx: usize = 0;
+    while (idx + code.len <= haystack.len) : (idx += 1) {
+        var matched = true;
+        var offset: usize = 0;
+        while (offset < code.len) : (offset += 1) {
+            if (std.ascii.toLower(haystack[idx + offset]) != std.ascii.toLower(code[offset])) {
+                matched = false;
+                break;
+            }
+        }
+        if (!matched) continue;
+
+        if (idx > 0 and std.ascii.isAlphanumeric(haystack[idx - 1])) continue;
+        const after_idx = idx + code.len;
+        if (after_idx < haystack.len and std.ascii.isAlphabetic(haystack[after_idx])) continue;
+        return true;
+    }
+    return false;
+}
+
+const KeywordAliasGroup = struct {
+    aliases: []const []const u8,
+};
+
+const keyword_alias_groups = [_]KeywordAliasGroup{
+    .{ .aliases = &[_][]const u8{ "香港", "Hong Kong", "HongKong", "Hong", "HK" } },
+    .{ .aliases = &[_][]const u8{ "新加坡", "Singapore", "Sing", "SG" } },
+    .{ .aliases = &[_][]const u8{ "美国", "美國", "United States", "UnitedStates", "USA", "US", "America" } },
+    .{ .aliases = &[_][]const u8{ "日本", "Japan", "JP" } },
+    .{ .aliases = &[_][]const u8{ "台湾", "台灣", "Taiwan", "TW" } },
+    .{ .aliases = &[_][]const u8{ "韩国", "韓國", "Korea", "KR" } },
+    .{ .aliases = &[_][]const u8{ "英国", "英國", "United Kingdom", "UnitedKingdom", "UK", "GB", "Britain" } },
+    .{ .aliases = &[_][]const u8{ "德国", "德國", "Germany", "DE" } },
+    .{ .aliases = &[_][]const u8{ "法国", "法國", "France", "FR" } },
+    .{ .aliases = &[_][]const u8{ "荷兰", "荷蘭", "Netherlands", "Holland", "NL" } },
+    .{ .aliases = &[_][]const u8{ "加拿大", "Canada", "CA" } },
+    .{ .aliases = &[_][]const u8{ "澳大利亚", "澳大利亞", "澳洲", "Australia", "AU" } },
+    .{ .aliases = &[_][]const u8{ "俄罗斯", "俄羅斯", "Russia", "RU" } },
+};
+
+fn keywordAliasMatches(text: []const u8, token: []const u8) bool {
+    for (keyword_alias_groups) |group| {
+        var token_in_group = false;
+        for (group.aliases) |alias| {
+            if (stringEqualsIgnoreCase(token, alias) or (alias.len >= 3 and containsAsciiCaseFold(token, alias))) {
+                token_in_group = true;
+                break;
+            }
+        }
+        if (!token_in_group) continue;
+        for (group.aliases) |alias| {
+            if (isShortAsciiCode(alias)) {
+                if (containsShortAsciiCode(text, alias)) return true;
+                continue;
+            }
+            if (std.mem.indexOf(u8, text, alias) != null) return true;
+            if (alias.len >= 3 and containsAsciiCaseFold(text, alias)) return true;
+        }
+    }
+    return false;
+}
 
 fn shouldKeepRenderedNode(allocator: std.mem.Allocator, node: CompareNode, exclude_filter: *const KeywordFilter, include_filter: *const KeywordFilter, keep_info_node: bool) !bool {
     if (!keep_info_node and isInfoNodeName(node.name)) return false;
@@ -1015,6 +1113,33 @@ fn shouldKeepRenderedNode(allocator: std.mem.Allocator, node: CompareNode, exclu
     if (exclude_filter.enabled() and include_filter.enabled()) return !exclude_hit and include_hit;
     if (exclude_filter.enabled()) return !exclude_hit;
     return include_hit;
+}
+
+test "keyword filter matches ascii case and region aliases" {
+    const allocator = std.testing.allocator;
+    var include_hong = try KeywordFilter.init(allocator, "Hong");
+    defer include_hong.deinit(allocator);
+    try std.testing.expect(include_hong.matches("🇭🇰 Hong Kong 01 example.com"));
+    try std.testing.expect(include_hong.matches("🇭🇰 hong kong 01 example.com"));
+    try std.testing.expect(include_hong.matches("🇭🇰 香港 01 example.com"));
+
+    var include_cn = try KeywordFilter.init(allocator, "香港");
+    defer include_cn.deinit(allocator);
+    try std.testing.expect(include_cn.matches("🇭🇰 Hong Kong 01 example.com"));
+
+    var include_sg_us = try KeywordFilter.init(allocator, "新加坡|美国");
+    defer include_sg_us.deinit(allocator);
+    try std.testing.expect(include_sg_us.matches("🇸🇬 Singapore 01 example.com"));
+    try std.testing.expect(include_sg_us.matches("🇺🇸 USA Seattle 01 example.com"));
+    try std.testing.expect(include_sg_us.matches("US01 example.com"));
+    try std.testing.expect(!include_sg_us.matches("🇦🇺 Australia Sydney 01 example.com"));
+    try std.testing.expect(!include_sg_us.matches("🇷🇺 RUS Moscow 01 example.com"));
+
+    var include_hk = try KeywordFilter.init(allocator, "HK");
+    defer include_hk.deinit(allocator);
+    try std.testing.expect(include_hk.matches("HK01 example.com"));
+    try std.testing.expect(include_hk.matches("Hong Kong 01 example.com"));
+    try std.testing.expect(!include_hk.matches("HKG transit example.com"));
 }
 
 fn loadCompareNodesAlloc(allocator: std.mem.Allocator, path: []const u8, keep_raw: bool) ![]CompareNode {

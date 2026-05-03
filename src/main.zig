@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const app_version = "0.1.11";
+const app_version = "0.1.15";
 const max_input_size = 64 * 1024 * 1024;
 
 const Command = enum {
@@ -626,6 +626,7 @@ fn runParseUriLines(allocator: std.mem.Allocator, options: Options) !void {
 fn schemeSummaryKey(node: NormalizedNode) []const u8 {
     if (std.mem.eql(u8, node.scheme, "hy2") or std.mem.eql(u8, node.scheme, "hysteria2")) return "hysteria2";
     if (std.mem.eql(u8, node.scheme, "naive+https") or std.mem.eql(u8, node.scheme, "naive+quic")) return "naive";
+    if (std.mem.eql(u8, node.scheme, "anytls")) return "anytls";
     return node.scheme;
 }
 
@@ -641,6 +642,7 @@ fn renderSummaryKey(node: CompareNode) []const u8 {
     if (std.mem.eql(u8, node.type_id, "6")) return "naive";
     if (std.mem.eql(u8, node.type_id, "7")) return "tuic";
     if (std.mem.eql(u8, node.type_id, "8")) return "hysteria2";
+    if (std.mem.eql(u8, node.type_id, "9")) return "anytls";
     return "other";
 }
 
@@ -856,7 +858,7 @@ fn firstJsonObjectTextAlloc(allocator: std.mem.Allocator, obj: std.json.ObjectMa
 fn writeCanonicalCompareValue(writer: anytype, allocator: std.mem.Allocator, key: []const u8, value: std.json.Value) !void {
     if (value == .string) {
         const raw = value.string;
-        if (std.mem.eql(u8, key, "password") or std.mem.eql(u8, key, "naive_pass")) {
+        if (std.mem.eql(u8, key, "password") or std.mem.eql(u8, key, "naive_pass") or std.mem.eql(u8, key, "anytls_pass")) {
             if (try maybeDecodeBase64PrintableAlloc(allocator, raw)) |decoded| {
                 defer allocator.free(decoded);
                 try writeJsonString(writer, decoded);
@@ -1349,6 +1351,7 @@ fn writeParseLogs(writer: anytype, nodes: []const NormalizedNode, level: LogLeve
     var naive_count: usize = 0;
     var tuic_count: usize = 0;
     var hy2_count: usize = 0;
+    var anytls_count: usize = 0;
 
     for (nodes) |node| {
         if (std.mem.eql(u8, node.scheme, "ss")) ss_count += 1
@@ -1358,7 +1361,8 @@ fn writeParseLogs(writer: anytype, nodes: []const NormalizedNode, level: LogLeve
         else if (std.mem.eql(u8, node.scheme, "trojan")) trojan_count += 1
         else if (std.mem.eql(u8, node.scheme, "naive+https") or std.mem.eql(u8, node.scheme, "naive+quic")) naive_count += 1
         else if (std.mem.eql(u8, node.scheme, "tuic")) tuic_count += 1
-        else if (std.mem.eql(u8, node.scheme, "hy2") or std.mem.eql(u8, node.scheme, "hysteria2")) hy2_count += 1;
+        else if (std.mem.eql(u8, node.scheme, "hy2") or std.mem.eql(u8, node.scheme, "hysteria2")) hy2_count += 1
+        else if (std.mem.eql(u8, node.scheme, "anytls")) anytls_count += 1;
     }
 
     try writer.print("SUMMARY\tTOTAL\t{d}\n", .{nodes.len});
@@ -1370,6 +1374,7 @@ fn writeParseLogs(writer: anytype, nodes: []const NormalizedNode, level: LogLeve
     if (naive_count > 0) try writer.print("SUMMARY\tNAIVE\t{d}\n", .{naive_count});
     if (tuic_count > 0) try writer.print("SUMMARY\tTUIC\t{d}\n", .{tuic_count});
     if (hy2_count > 0) try writer.print("SUMMARY\tHY2\t{d}\n", .{hy2_count});
+    if (anytls_count > 0) try writer.print("SUMMARY\tANYTLS\t{d}\n", .{anytls_count});
 
     if (level != .verbose) return;
     for (nodes) |node| {
@@ -1665,7 +1670,7 @@ fn appendReuseFieldsAlloc(allocator: std.mem.Allocator, base_json: []const u8, i
 fn buildFancyssNodeJsonAlloc(allocator: std.mem.Allocator, node: NormalizedNode, options: Options) !?[]u8 {
     if (options.pkg_type) |pkg_type| {
         if (!std.mem.eql(u8, pkg_type, "full") and
-            (std.mem.eql(u8, node.scheme, "tuic") or std.mem.eql(u8, node.scheme, "naive+https") or std.mem.eql(u8, node.scheme, "naive+quic")))
+            (std.mem.eql(u8, node.scheme, "tuic") or std.mem.eql(u8, node.scheme, "anytls") or std.mem.eql(u8, node.scheme, "naive+https") or std.mem.eql(u8, node.scheme, "naive+quic")))
         {
             return null;
         }
@@ -1932,6 +1937,22 @@ fn buildFancyssNodeJsonAlloc(allocator: std.mem.Allocator, node: NormalizedNode,
         try jsonFieldMaybeString(writer, &first, "hy2_dl", hy2_ctx.dl);
         try jsonFieldMaybeString(writer, &first, "hy2_cg", hy2_ctx.cg);
         try jsonFieldMaybeString(writer, &first, "hy2_tfo", resolveHy2Tfo(hy2_ctx.tfo_switch, tfo_value));
+    } else if (std.mem.eql(u8, node.scheme, "anytls")) {
+        const group_hash = try makeGroupHashAlloc(allocator, node, options);
+        defer if (group_hash) |v| allocator.free(v);
+        const pass_b64 = if (node.password) |v| try base64EncodeAlloc(allocator, v) else null;
+        defer if (pass_b64) |v| allocator.free(v);
+        const ai = effectiveAllowInsecure(node, options);
+
+        try jsonFieldMaybeString(writer, &first, "group", group_hash);
+        try jsonFieldMaybeString(writer, &first, "mode", options.mode);
+        try jsonFieldString(writer, &first, "name", node.name);
+        try jsonFieldString(writer, &first, "type", "9");
+        try jsonFieldString(writer, &first, "anytls_server", node.server);
+        try jsonFieldPort(writer, &first, "anytls_port", node.port);
+        try jsonFieldMaybeString(writer, &first, "anytls_pass", pass_b64);
+        try jsonFieldMaybeString(writer, &first, "anytls_sni", node.sni);
+        try jsonFieldMaybeString(writer, &first, "anytls_ai", if (ai) "1" else null);
     } else {
         return null;
     }
@@ -3026,6 +3047,7 @@ fn parseLine(allocator: std.mem.Allocator, line: []const u8, options: Options) !
     if (std.mem.eql(u8, scheme, "naive+https") or std.mem.eql(u8, scheme, "naive+quic")) return parseNaive(allocator, scheme, line, options);
     if (std.mem.eql(u8, scheme, "tuic")) return parseTuic(allocator, line, options);
     if (std.mem.eql(u8, scheme, "hy2") or std.mem.eql(u8, scheme, "hysteria2")) return parseHy2(allocator, scheme, line, options);
+    if (std.mem.eql(u8, scheme, "anytls")) return parseAnyTls(allocator, line, options);
     return error.UnsupportedScheme;
 }
 
@@ -3443,6 +3465,30 @@ fn parseHy2(allocator: std.mem.Allocator, scheme: []const u8, line: []const u8, 
     return node;
 }
 
+fn parseAnyTls(allocator: std.mem.Allocator, line: []const u8, options: Options) !NormalizedNode {
+    const body = try requireBody(line, "anytls");
+    const parts = splitFragment(body);
+    const query_main = splitQuery(parts.before);
+    const authority = std.mem.trimRight(u8, query_main.before, "/");
+    const at = std.mem.lastIndexOfScalar(u8, authority, '@') orelse return error.InvalidUri;
+    const password = authority[0..at];
+    const hostport = authority[at + 1 ..];
+    const hp = try splitHostPortAlloc(allocator, hostport);
+    defer hp.deinit(allocator);
+    const name = if (parts.fragment.len > 0) try urlDecodeAlloc(allocator, parts.fragment) else try allocator.dupe(u8, hp.host);
+    defer allocator.free(name);
+
+    var node = try baseNode(allocator, "anytls", name, hp.host, hp.port, options);
+    node.password = try urlDecodeAlloc(allocator, password);
+    if (try queryValueAlloc(allocator, query_main.query, "sni")) |value| node.sni = value;
+    if (try queryBoolValue(query_main.query, "insecure")) |value| node.allow_insecure = value;
+    if (try queryBoolValue(query_main.query, "allowInsecure")) |value| node.allow_insecure = value;
+    if (try queryBoolValue(query_main.query, "allow_insecure")) |value| node.allow_insecure = value;
+    if (try queryBoolValue(query_main.query, "skip_cert_verify")) |value| node.allow_insecure = value;
+    if (options.include_raw) node.raw_uri = try allocator.dupe(u8, line);
+    return node;
+}
+
 fn baseNode(allocator: std.mem.Allocator, scheme: []const u8, name: []const u8, server: []const u8, port: u16, options: Options) !NormalizedNode {
     return .{
         .scheme = try allocator.dupe(u8, scheme),
@@ -3783,7 +3829,8 @@ fn isSupportedScheme(scheme: []const u8) bool {
         std.mem.eql(u8, scheme, "naive+quic") or
         std.mem.eql(u8, scheme, "tuic") or
         std.mem.eql(u8, scheme, "hy2") or
-        std.mem.eql(u8, scheme, "hysteria2");
+        std.mem.eql(u8, scheme, "hysteria2") or
+        std.mem.eql(u8, scheme, "anytls");
 }
 
 fn looksLikeTextError(input: []const u8) bool {

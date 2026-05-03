@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const app_version = "0.1.15";
+const app_version = "0.1.16";
 const max_input_size = 64 * 1024 * 1024;
 
 const Command = enum {
@@ -858,7 +858,7 @@ fn firstJsonObjectTextAlloc(allocator: std.mem.Allocator, obj: std.json.ObjectMa
 fn writeCanonicalCompareValue(writer: anytype, allocator: std.mem.Allocator, key: []const u8, value: std.json.Value) !void {
     if (value == .string) {
         const raw = value.string;
-        if (std.mem.eql(u8, key, "password") or std.mem.eql(u8, key, "naive_pass") or std.mem.eql(u8, key, "anytls_pass")) {
+        if (std.mem.eql(u8, key, "password") or std.mem.eql(u8, key, "naive_pass")) {
             if (try maybeDecodeBase64PrintableAlloc(allocator, raw)) |decoded| {
                 defer allocator.free(decoded);
                 try writeJsonString(writer, decoded);
@@ -1940,8 +1940,6 @@ fn buildFancyssNodeJsonAlloc(allocator: std.mem.Allocator, node: NormalizedNode,
     } else if (std.mem.eql(u8, node.scheme, "anytls")) {
         const group_hash = try makeGroupHashAlloc(allocator, node, options);
         defer if (group_hash) |v| allocator.free(v);
-        const pass_b64 = if (node.password) |v| try base64EncodeAlloc(allocator, v) else null;
-        defer if (pass_b64) |v| allocator.free(v);
         const ai = effectiveAllowInsecure(node, options);
 
         try jsonFieldMaybeString(writer, &first, "group", group_hash);
@@ -1950,7 +1948,7 @@ fn buildFancyssNodeJsonAlloc(allocator: std.mem.Allocator, node: NormalizedNode,
         try jsonFieldString(writer, &first, "type", "9");
         try jsonFieldString(writer, &first, "anytls_server", node.server);
         try jsonFieldPort(writer, &first, "anytls_port", node.port);
-        try jsonFieldMaybeString(writer, &first, "anytls_pass", pass_b64);
+        try jsonFieldMaybeString(writer, &first, "anytls_pass", node.password);
         try jsonFieldMaybeString(writer, &first, "anytls_sni", node.sni);
         try jsonFieldMaybeString(writer, &first, "anytls_ai", if (ai) "1" else null);
     } else {

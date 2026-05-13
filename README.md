@@ -31,7 +31,7 @@
 
 ## 当前版本
 
-`0.1.10`
+`0.1.17`
 
 当前代码按 Zig `0.15.2` 编写并验证。
 
@@ -82,6 +82,7 @@ sub-tool version
 - `tuic`
 - `hy2`
 - `hysteria2`
+- `anytls`
 
 当前也支持解析 `Clash/Mihomo YAML` 订阅中的 `proxies` 节点，现阶段至少包括：
 
@@ -89,6 +90,7 @@ sub-tool version
 - `ss2022`
 - `ss + obfs`
 - `trojan`
+- `anytls`
 
 ### `summary`
 

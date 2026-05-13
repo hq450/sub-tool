@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const app_version = "0.1.16";
+const app_version = "0.1.17";
 const max_input_size = 64 * 1024 * 1024;
 
 const Command = enum {
@@ -3017,6 +3017,15 @@ fn clashProxyToNormalizedNode(allocator: std.mem.Allocator, proxy: ClashProxy, o
         return node;
     }
 
+    if (stringEqualsIgnoreCase(proxy_type, "anytls")) {
+        const password = proxy.password orelse return error.InvalidUri;
+        var node = try baseNode(allocator, "anytls", name, server, port, options);
+        node.password = try allocator.dupe(u8, password);
+        if (proxy.sni) |v| node.sni = try allocator.dupe(u8, v);
+        if (proxy.skip_cert_verify) |v| node.allow_insecure = v;
+        return node;
+    }
+
     return error.UnsupportedScheme;
 }
 
@@ -3773,6 +3782,7 @@ fn looksLikeClashYaml(input: []const u8) bool {
         std.mem.indexOf(u8, lower, "\nrule:") != null or
         std.mem.indexOf(u8, lower, "type: vmess") != null or
         std.mem.indexOf(u8, lower, "type: trojan") != null or
+        std.mem.indexOf(u8, lower, "type: anytls") != null or
         std.mem.indexOf(u8, lower, "type: ss") != null or
         std.mem.indexOf(u8, lower, "type: socks5") != null or
         std.mem.indexOf(u8, lower, "port:") != null or
@@ -4322,6 +4332,52 @@ test "parse clash yaml trojan ws block proxy" {
     try std.testing.expectEqualStrings("/ws", result.nodes.items[0].path.?);
     try std.testing.expectEqualStrings("ws.example.com", result.nodes.items[0].host.?);
     try std.testing.expectEqual(true, result.nodes.items[0].allow_insecure.?);
+}
+
+test "parse clash yaml anytls flow proxy" {
+    const allocator = std.testing.allocator;
+    const sample =
+        "proxies:\n" ++
+        "  - {name: HK-ANYTLS, type: anytls, server: any.example.com, port: 443, password: pass:word, sni: tls.example.com, skip-cert-verify: true}\n" ++
+        "proxy-groups:\n" ++
+        "  - {name: auto, type: select, proxies: [HK-ANYTLS]}\n";
+    var result = try parseSubscription(allocator, sample, .{ .command = .parse_uri_lines });
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(InputKind.clash_yaml, result.kind);
+    try std.testing.expectEqual(@as(usize, 1), result.nodes.items.len);
+    try std.testing.expectEqualStrings("anytls", result.nodes.items[0].scheme);
+    try std.testing.expectEqualStrings("HK-ANYTLS", result.nodes.items[0].name);
+    try std.testing.expectEqualStrings("any.example.com", result.nodes.items[0].server);
+    try std.testing.expectEqual(@as(u16, 443), result.nodes.items[0].port);
+    try std.testing.expectEqualStrings("pass:word", result.nodes.items[0].password.?);
+    try std.testing.expectEqualStrings("tls.example.com", result.nodes.items[0].sni.?);
+    try std.testing.expectEqual(true, result.nodes.items[0].allow_insecure.?);
+}
+
+test "parse clash yaml anytls block proxy" {
+    const allocator = std.testing.allocator;
+    const sample =
+        "proxies:\n" ++
+        "  - name: US-ANYTLS\n" ++
+        "    type: anytls\n" ++
+        "    server: any-us.example.com\n" ++
+        "    port: 8443\n" ++
+        "    password: any-pass\n" ++
+        "    sni: any-sni.example.com\n" ++
+        "    skip-cert-verify: false\n" ++
+        "rules:\n" ++
+        "  - MATCH,DIRECT\n";
+    var result = try parseSubscription(allocator, sample, .{ .command = .parse_uri_lines });
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(InputKind.clash_yaml, result.kind);
+    try std.testing.expectEqual(@as(usize, 1), result.nodes.items.len);
+    try std.testing.expectEqualStrings("anytls", result.nodes.items[0].scheme);
+    try std.testing.expectEqualStrings("US-ANYTLS", result.nodes.items[0].name);
+    try std.testing.expectEqualStrings("any-us.example.com", result.nodes.items[0].server);
+    try std.testing.expectEqual(@as(u16, 8443), result.nodes.items[0].port);
+    try std.testing.expectEqualStrings("any-pass", result.nodes.items[0].password.?);
+    try std.testing.expectEqualStrings("any-sni.example.com", result.nodes.items[0].sni.?);
+    try std.testing.expectEqual(false, result.nodes.items[0].allow_insecure.?);
 }
 
 test "detect text error payloads" {
